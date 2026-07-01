@@ -303,13 +303,25 @@ app.post('/api/diagnose', async (req, res) => {
         lostLeads,
         keyFinding: `基于真实搜索数据分析，${brandName}在${weakest.name}方面表现最差（${weakest.score}/10），这是最需要优先改进的地方。`
       },
-      rawData: { baidu, zhihu },
+      dataSources: {
+        realtime: [
+          { platform: '百度搜索', method: '实时抓取搜索结果页面', status: baidu.status === 'success' ? '已抓取' : '抓取受限' },
+          { platform: '知乎', method: '实时抓取搜索内容', status: zhihu.status === 'success' ? '已抓取' : '抓取受限' },
+        ],
+        aiAnalysis: [
+          { platform: '豆包搜索表现', method: 'DeepSeek AI基于训练数据分析', note: '豆包暂无公开搜索API，由AI基于公开信息判断趋势' },
+          { platform: '小红书搜索曝光', method: 'DeepSeek AI基于训练数据分析', note: '小红书反爬虫严格，由AI基于公开信息判断趋势' },
+          { platform: 'DeepSeek推荐', method: 'DeepSeek AI自我评估', note: '基于AI对品牌公开信息的理解程度评估' },
+          { platform: '品牌可信度', method: 'DeepSeek AI综合评估', note: '基于品牌资质、口碑、媒体等公开信息评估' },
+        ]
+      },
       executiveSummary: [
         `${brandName}（${industry}）的AI搜索综合评分为 ${overall}/10，等级${overall >= 8 ? 'A' : overall >= 6.5 ? 'B' : overall >= 5 ? 'C' : 'D'}。`,
-        `基于百度搜索真实数据：首页${baidu.mentionRate}%的结果提到了您的品牌${baidu.hasOfficialSite ? '，有官方信息' : '，但缺少官方信息'}。`,
-        `最大短板：${weakest.name}（${weakest.score}/10），直接影响潜在客户获取。`,
-        `如不优化，预计每月流失约${lostLeads}个通过AI搜索来的潜在客户。`,
-        `执行前2条建议，预计1-3个月内可见明显改善。`
+        `百度搜索（真实抓取）：首页${baidu.mentionRate}%的结果提到了您的品牌。`,
+        `知乎（真实抓取）：找到${zhihu.contentCount}条相关内容。`,
+        `豆包/小红书/DeepSeek（AI分析）：基于AI大模型对公开信息的深度分析。`,
+        `最大短板：${weakest.name}（${weakest.score}/10），建议优先改进。`,
+        `如不优化，预计每月流失约${lostLeads}个潜在客户。`
       ]
     };
 
