@@ -16,9 +16,17 @@ app.use(express.static(path.join(__dirname, 'dist')));
 
 const DEEPSEEK_KEY = process.env.DEEPSEEK_API_KEY;
 
+// 带超时的fetch
+function fetchWithTimeout(url, options = {}, timeoutMs = 15000) {
+  return Promise.race([
+    fetch(url, options),
+    new Promise((_, reject) => setTimeout(() => reject(new Error('请求超时')), timeoutMs))
+  ]);
+}
+
 async function callDeepSeek(prompt) {
   try {
-    const res = await fetch('https://api.deepseek.com/chat/completions', {
+    const res = await fetchWithTimeout('https://api.deepseek.com/chat/completions', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -92,13 +100,12 @@ function extractPoints(text, count = 3) {
 async function scrapeBaidu(brand, industry) {
   try {
     const query = encodeURIComponent(`${brand} ${industry}`);
-    const response = await fetch(`https://www.baidu.com/s?wd=${query}&rn=10`, {
+    const response = await fetchWithTimeout(`https://www.baidu.com/s?wd=${query}&rn=10`, {
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
         'Accept-Language': 'zh-CN,zh;q=0.9',
       },
-      timeout: 15000,
     });
     const html = await response.text();
 
@@ -129,12 +136,11 @@ async function scrapeBaidu(brand, industry) {
 // 2. 知乎搜索抓取
 async function scrapeZhihu(brand) {
   try {
-    const response = await fetch(`https://www.zhihu.com/search?type=content&q=${encodeURIComponent(brand)}`, {
+    const response = await fetchWithTimeout(`https://www.zhihu.com/search?type=content&q=${encodeURIComponent(brand)}`, {
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
         'Accept': 'text/html',
       },
-      timeout: 15000,
     });
     const html = await response.text();
     const items = html.match(/<h2[^>]*class="[^"]*ContentItem-title[^"]*"[^>]*>.*?<\/h2>/gi) || [];
