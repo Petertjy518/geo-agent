@@ -2,13 +2,10 @@ const express = require('express');
 const cors = require('cors');
 const fetch = require('node-fetch');
 const path = require('path');
-const fs = require('fs');
 
 const app = express();
 app.use(cors());
 app.use(express.json());
-
-// Serve static files from dist folder
 app.use(express.static(path.join(__dirname, 'dist')));
 
 const DEEPSEEK_KEY = process.env.DEEPSEEK_API_KEY;
@@ -17,10 +14,33 @@ async function callAI(prompt) {
   const res = await fetch('https://api.deepseek.com/chat/completions', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${DEEPSEEK_KEY}` },
-    body: JSON.stringify({ model: 'deepseek-chat', messages: [{ role: 'user', content: prompt }], max_tokens: 2000, temperature: 0.2 }),
+    body: JSON.stringify({
+      model: 'deepseek-chat',
+      messages: [{ role: 'user', content: prompt }],
+      max_tokens: 2000,
+      temperature: 0.3
+    }),
   });
   const data = await res.json();
   return data.choices?.[0]?.message?.content || '';
+}
+
+function cleanAIOutput(text) {
+  return text
+    .replace(/#{1,6}\s*/g, '')
+    .replace(/\*\*/g, '')
+    .replace(/\*/g, '')
+    .replace(/---+/g, ' ')
+    .replace(/\n{3,}/g, '\n\n')
+    .replace(/作为.*?专家[，,]/g, '')
+    .replace(/基于.*?分析[，,]/g, '')
+    .replace(/根据.*?信息[，,]/g, '')
+    .replace(/我将.*?评估[，,]/g, '')
+    .replace(/本文将.*?进行/g, '进行')
+    .replace(/值得注意的是[，,]/g, '')
+    .replace(/综上所述[，,]/g, '')
+    .replace(/总的来说[，,]/g, '')
+    .trim();
 }
 
 function extractScore(text) {
@@ -28,105 +48,134 @@ function extractScore(text) {
   return m ? Math.min(10, Math.max(1, parseFloat(m[1]))) : 5;
 }
 
-app.get('/api/health', (req, res) => res.json({ status: 'ok', api: !!DEEPSEEK_KEY }));
+function extractFindings(text, count = 3) {
+  const lines = text.split('\n').filter(l => l.trim().length > 15);
+  return lines.slice(0, count).map(l => cleanAIOutput(l));
+}
 
+app.get('/api/health', (req, res) => res.json({ status: 'ok', api: !!DEEPSEEK_KEY }));
 app.get('/api/quota', (req, res) => res.json({ dailyLimit: 3, used: 0, remaining: 3 }));
 
 app.post('/api/diagnose', async (req, res) => {
   if (!DEEPSEEK_KEY) return res.status(503).json({ error: 'API未配置' });
-  
+
   const { brandInfo } = req.body;
   const { brandName, industry, competitors } = brandInfo;
-  const comps = (competitors || []).filter(c => c).join('、') || '竞品';
-  
+  const comps = (competitors || []).filter(c => c).join('、') || '同行业竞品';
+
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
-  
+
   const send = (data) => res.write(`data: ${JSON.stringify(data)}\n\n`);
-  
+
   try {
-    send({ status: 'running', progress: 10, currentPlatform: 'AI认知度分析', message: '分析品牌在AI搜索中的认知度...' });
-    const r1 = await callAI(`分析"${brandName}"(${industry})在ChatGPT/Kimi/DeepSeek等AI平台的品牌认知度，与${comps}对比。给出1-10分评分和详细分析。`);
+    // Dimension 1: AI搜索知名度
+    send({ status: 'running', progress: 12, currentPlatform: 'AI搜索知名度', message: '分析品牌在AI搜索中被用户看到的频率...' });
+    const r1 = await callAI(`分析品牌"${brandName}"(${industry})在AI搜索(ChatGPT/Kimi/DeepSeek等)中的知名度。用户搜索"${industry}推荐"时，这个品牌被AI提到的概率是多少？和${comps}比怎么样？用大白话给出1-10分评分和3点具体发现。禁止用markdown格式。`);
     const s1 = extractScore(r1);
-    
-    send({ status: 'running', progress: 28, currentPlatform: 'E-E-A-T权威信号', message: '评估品牌的经验、专业度、权威性、可信度...' });
-    const r2 = await callAI(`评估"${brandName}"(${industry})的E-E-A-T信号(Experience经验, Expertise专业度, Authoritativeness权威性, Trustworthiness可信度)。给出综合1-10分评分和详细分析。`);
+    const findings1 = extractFindings(r1);
+
+    // Dimension 2: 品牌可信度
+    send({ status: 'running', progress: 28, currentPlatform: '品牌可信度', message: '评估品牌的专业形象和用户信任度...' });
+    const r2 = await callAI(`评估"${brandName}"(${industry})的品牌可信度：有没有专业资质？用户评价怎么样？媒体报道多不多？信息是否透明？用大白话给出1-10分评分和3点具体发现。禁止用markdown格式。`);
     const s2 = extractScore(r2);
-    
-    send({ status: 'running', progress: 45, currentPlatform: '信息完整度', message: '评估品牌信息的完整性和结构化程度...' });
-    const r3 = await callAI(`评估"${brandName}"(${industry})的信息完整度：产品信息、品牌故事、结构化数据、多平台一致性、时效性。给出1-10分评分和详细分析。`);
+    const findings2 = extractFindings(r2);
+
+    // Dimension 3: 信息完整度
+    send({ status: 'running', progress: 44, currentPlatform: '信息完整度', message: '检查AI能否准确获取品牌的产品、价格、服务信息...' });
+    const r3 = await callAI(`评估"${brandName}"(${industry})的信息完整度：AI是否能准确描述这个品牌的产品、价格、服务？官网、社交媒体上的信息是否一致和完整？用大白话给出1-10分评分和3点具体发现。禁止用markdown格式。`);
     const s3 = extractScore(r3);
-    
-    send({ status: 'running', progress: 58, currentPlatform: '引用语境质量', message: '分析品牌在AI生成内容中的引用位置和方式...' });
-    const r4 = await callAI(`分析"${brandName}"(${industry})在AI生成内容中的引用语境质量：是主推荐(10分)、前三提及(8分)、对比参与者(6分)、品类提及(4分)还是附带提及(2分)。给出1-10分评分。`);
+    const findings3 = extractFindings(r3);
+
+    // Dimension 4: AI推荐优先级
+    send({ status: 'running', progress: 58, currentPlatform: 'AI推荐优先级', message: '分析品牌在AI回答中被推荐的优先程度...' });
+    const r4 = await callAI(`分析"${brandName}"(${industry})在AI生成回答中的推荐位置：AI是直接推荐为首选，还是简单提一下？和${comps}相比，用户看到的推荐顺序是什么？用大白话给出1-10分评分和3点具体发现。禁止用markdown格式。`);
     const s4 = extractScore(r4);
-    
-    send({ status: 'running', progress: 72, currentPlatform: '竞品竞争位势', message: '分析品牌相对于竞品的AI搜索竞争位势...' });
-    const r5 = await callAI(`分析"${brandName}"(${industry})与${comps}在AI搜索可见度方面的竞争位势，预估SoV(声量份额)。给出1-10分评分和详细分析。`);
+    const findings4 = extractFindings(r4);
+
+    // Dimension 5: 市场占位
+    send({ status: 'running', progress: 72, currentPlatform: '市场占位', message: '对比竞品在AI搜索中的表现差距...' });
+    const r5 = await callAI(`对比"${brandName}"和${comps}在AI搜索中的竞争位置：谁在AI里更出名？各自的优势是什么？这个品牌落后在哪里？用大白话给出1-10分评分和3点具体发现。禁止用markdown格式。`);
     const s5 = extractScore(r5);
-    
-    send({ status: 'running', progress: 86, currentPlatform: '多平台覆盖度', message: '评估品牌跨AI平台的覆盖表现...' });
-    const r6 = await callAI(`分析"${brandName}"(${industry})在ChatGPT、Kimi、DeepSeek、Perplexity、Google AI Overviews等平台的覆盖度。给出1-10分评分。`);
+    const findings5 = extractFindings(r5);
+
+    // Dimension 6: 平台覆盖度
+    send({ status: 'running', progress: 86, currentPlatform: '平台覆盖度', message: '检查品牌在各AI平台的覆盖情况...' });
+    const r6 = await callAI(`评估"${brandName}"(${industry})在主流AI平台(ChatGPT、Kimi、DeepSeek、百度文心一言)的覆盖情况：哪些平台能找到这个品牌？哪些平台几乎找不到？用大白话给出1-10分评分和3点具体发现。禁止用markdown格式。`);
     const s6 = extractScore(r6);
-    
-    send({ status: 'running', progress: 95, currentPlatform: '优化建议', message: '生成个性化GEO优化方案...' });
-    const rec = await callAI(`基于${brandName}(${industry})的GEO诊断结果(各维度得分: 认知度${s1}, E-E-A-T${s2}, 信息${s3}, 语境${s4}, 竞争${s5}, 平台${s6})，生成4条优化建议。用JSON格式: [{"priority":"high","title":"...","description":"...","expectedEffect":"...","difficulty":"低","cost":"免费"}]`);
-    
+    const findings6 = extractFindings(r6);
+
+    // Business impact analysis
+    send({ status: 'running', progress: 93, currentPlatform: '商业价值分析', message: '评估不优化的潜在损失...' });
+    const biz = await callAI(`分析"${brandName}"(${industry})如果不做AI搜索优化，会损失什么？每个月可能流失多少潜在客户？竞品在抢哪些客户？用具体数字和大白话说明。禁止用markdown格式。`);
+
+    // Generate recommendations
+    send({ status: 'running', progress: 97, currentPlatform: '优化建议', message: '生成可执行的优化方案...' });
+    const rec = await callAI(`针对"${brandName}"(${industry})，给出4条具体的GEO优化建议。每条建议包含：问题是什么、具体怎么做、大概花多少钱、预期有什么效果。按投入产出比从高到低排序。用大白话，禁止用markdown格式。用JSON数组格式：[{"title":"建议标题","problem":"问题描述","action":"具体做法","cost":"费用","effect":"预期效果"}]`);
+
     let recommendations = [];
     try { recommendations = JSON.parse(rec.match(/\[[\s\S]*\]/)?.[0] || '[]').slice(0, 4); } catch(e) {}
     if (recommendations.length === 0) {
       recommendations = [
-        { priority: 'high', title: 'AI原生内容矩阵建设', description: '在知乎、小红书等平台发布结构化内容，提升AI引用概率。', expectedEffect: '3-6个月AI提及率提升40-60%', difficulty: '中', cost: '内容运营成本' },
-        { priority: 'high', title: '权威背书体系构建', description: '完善品牌资质展示，争取行业媒体报导，强化E-E-A-T信号。', expectedEffect: '6个月内品牌权威度显著提升', difficulty: '中', cost: '公关费用' },
-        { priority: 'medium', title: '结构化数据优化', description: '实施Schema.org标记，建立FAQ页面，确保多平台信息一致。', expectedEffect: 'AI信息抓取完整度提升50%+', difficulty: '低', cost: '技术成本' },
-        { priority: 'medium', title: '差异化价值主张强化', description: '持续强调独特卖点，使AI准确理解和传达品牌价值。', expectedEffect: 'AI推荐语境升级1-2个级别', difficulty: '中', cost: '策划费用' }
+        { title: '在知乎/小红书发布专业内容', problem: 'AI搜索找不到足够的品牌信息', action: '每周发布2-3篇专业内容，包含FAQ格式', cost: '每月2000-5000元（内容创作）', effect: '3个月内AI提及率提升50%' },
+        { title: '完善百度百科和品牌词条', problem: 'AI对品牌基础信息了解不足', action: '创建/优化百度百科，完善品牌故事和产品信息', cost: '一次性3000-8000元', effect: 'AI信息准确度显著提升' },
+        { title: '收集和展示客户真实评价', problem: '品牌可信度信号较弱', action: '引导满意客户在主流平台留下真实评价', cost: '每月1000-3000元（运营激励）', effect: '口碑和推荐优先级提升' },
+        { title: '官网添加FAQ和结构化数据', problem: 'AI难以抓取和理解官网信息', action: '添加常见问题页面，实施Schema标记', cost: '一次性5000-10000元（技术开发）', effect: 'AI回答中品牌信息更完整' }
       ];
     }
-    
+
+    // Build dimensions with new names
     const dims = [
-      { dimension: 'AI认知度', dimensionEn: 'AI Brand Awareness', score: s1, maxScore: 10, weight: 0.20, analysis: r1.slice(0, 400), benchmark: s1 >= 7 ? '高于行业平均' : s1 >= 4.5 ? '行业平均水准' : '低于行业平均' },
-      { dimension: 'E-E-A-T权威信号', dimensionEn: 'E-E-A-T Authority', score: s2, maxScore: 10, weight: 0.25, analysis: r2.slice(0, 400), benchmark: s2 >= 7 ? 'E-E-A-T信号强' : s2 >= 4.5 ? 'E-E-A-T信号中等' : 'E-E-A-T信号弱' },
-      { dimension: '信息完整度', dimensionEn: 'Information Richness', score: s3, maxScore: 10, weight: 0.20, analysis: r3.slice(0, 400), benchmark: s3 >= 7 ? '信息架构完善' : s3 >= 4.5 ? '信息基本完整' : '信息缺失严重' },
-      { dimension: '引用语境质量', dimensionEn: 'Citation Context', score: s4, maxScore: 10, weight: 0.15, analysis: r4.slice(0, 400), benchmark: s4 >= 7 ? '推荐优先级高' : s4 >= 4.5 ? '推荐优先级中等' : '推荐优先级低' },
-      { dimension: '竞品竞争位势', dimensionEn: 'Competitive Position', score: s5, maxScore: 10, weight: 0.12, analysis: r5.slice(0, 400), benchmark: s5 >= 7 ? '竞争优势明显' : s5 >= 4.5 ? '竞争位势中等' : '竞争位势较弱' },
-      { dimension: '多平台覆盖度', dimensionEn: 'Platform Coverage', score: s6, maxScore: 10, weight: 0.08, analysis: r6.slice(0, 400), benchmark: s6 >= 7 ? '多平台覆盖良好' : s6 >= 4.5 ? '部分平台有覆盖' : '平台覆盖不足' },
+      { key: 'awareness', name: 'AI搜索知名度', score: s1, analysis: cleanAIOutput(r1).slice(0, 300), findings: findings1, icon: '🔍' },
+      { key: 'trust', name: '品牌可信度', score: s2, analysis: cleanAIOutput(r2).slice(0, 300), findings: findings2, icon: '🛡️' },
+      { key: 'info', name: '信息完整度', score: s3, analysis: cleanAIOutput(r3).slice(0, 300), findings: findings3, icon: '📋' },
+      { key: 'priority', name: 'AI推荐优先级', score: s4, analysis: cleanAIOutput(r4).slice(0, 300), findings: findings4, icon: '⭐' },
+      { key: 'position', name: '市场占位', score: s5, analysis: cleanAIOutput(r5).slice(0, 300), findings: findings5, icon: '📊' },
+      { key: 'coverage', name: '平台覆盖度', score: s6, analysis: cleanAIOutput(r6).slice(0, 300), findings: findings6, icon: '🌐' },
     ];
-    
-    const totalWeight = dims.reduce((s, d) => s + d.weight, 0);
-    const weightedSum = dims.reduce((s, d) => s + d.score * d.weight, 0);
-    const overall = Math.round((weightedSum / totalWeight) * 10) / 10;
-    
+
+    const overall = Math.round(((s1*0.2 + s2*0.25 + s3*0.2 + s4*0.15 + s5*0.12 + s6*0.08) / 1.0) * 10) / 10;
+    const weakest = dims.reduce((min, d) => d.score < min.score ? d : min);
+
+    // Business insight
+    const bizClean = cleanAIOutput(biz);
+    const lostLeadsMatch = bizClean.match(/(\d+)[\s]*(?:个|位)?[\s]*(?:客户|潜在客户|用户)/);
+    const lostLeads = lostLeadsMatch ? lostLeadsMatch[1] + '个/月' : '数十个/月';
+
     const report = {
       id: `GEO-${Date.now()}`,
       brandInfo,
       createdAt: new Date().toLocaleDateString('zh-CN'),
       overallScore: overall,
-      riskLevel: overall < 4.5 ? 'high' : overall < 6.5 ? 'medium' : 'low',
-      riskLabel: overall < 4.5 ? '高风险' : overall < 6.5 ? '中风险' : '低风险',
-      riskColor: overall < 4.5 ? '#ef4444' : overall < 6.5 ? '#f59e0b' : '#10b981',
-      radarData: dims.map(d => ({ dimension: d.dimension, score: d.score, fullMark: 10 })),
+      grade: overall >= 8 ? 'A' : overall >= 6.5 ? 'B' : overall >= 5 ? 'C' : 'D',
+      riskLabel: overall < 5 ? '高风险 - 急需优化' : overall < 6.5 ? '中等风险 - 有待提升' : overall < 8 ? '良好 - 可进一步优化' : '优秀 - 保持领先',
+      radarData: dims.map(d => ({ name: d.name, score: d.score })),
       dimensions: dims,
-      recommendations: recommendations.map((r, i) => ({ ...r, id: i + 1, timeline: r.difficulty === '低' ? '1-2周' : r.difficulty === '中' ? '1-3个月' : '3-6个月' })),
-      summary: [
-        `${brandName}（${industry}）的综合GEO得分为 **${overall}/10**。`,
-        `优势维度：**${dims.reduce((m,d)=>d.score>m.score?d:m).dimension}**（${dims.reduce((m,d)=>d.score>m.score?d:m).score}/10）。`,
-        `薄弱维度：**${dims.reduce((m,d)=>d.score<m.score?d:m).dimension}**（${dims.reduce((m,d)=>d.score<m.score?d:m).score}/10），建议优先优化。`,
-      ],
-      methodology: { framework: 'Princeton/MIT GEO Framework + E-E-A-T Guidelines', dimensions: 6, aiModel: 'DeepSeek-V3', dataSource: 'AI深度分析' },
+      weakestDimension: { name: weakest.name, score: weakest.score },
+      recommendations: recommendations.map((r, i) => ({ ...r, id: i + 1, priority: i < 2 ? 'high' : 'medium' })),
+      businessInsight: {
+        summary: bizClean.slice(0, 400),
+        lostLeads,
+        keyFinding: `您的品牌在${weakest.name}方面得分最低(${weakest.score}/10)，这是最需要优先改进的地方。`
+      },
+      executiveSummary: [
+        `${brandName}的AI搜索综合评分为 ${overall}/10，等级${overall >= 8 ? 'A' : overall >= 6.5 ? 'B' : overall >= 5 ? 'C' : 'D'}。`,
+        `最大短板：${weakest.name}（${weakest.score}/10），建议优先投入资源改进。`,
+        `如不优化，预计每月流失约${lostLeads}个通过AI搜索来的潜在客户。`,
+        `执行前2条高优先级建议，预计1-3个月内可见明显改善。`
+      ]
     };
-    
-    send({ status: 'completed', progress: 100, currentPlatform: '完成', message: '诊断完成！', report });
+
+    send({ status: 'completed', progress: 100, report });
     res.end();
-    
+
   } catch (err) {
     send({ status: 'error', message: err.message });
     res.end();
   }
 });
 
-app.get('*', (req, res) => {
-  res.sendFile(path.join(__dirname, 'dist', 'index.html'));
-});
+app.get('*', (req, res) => res.sendFile(path.join(__dirname, 'dist', 'index.html')));
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`GEO Agent running on port ${PORT}, API: ${DEEPSEEK_KEY ? 'OK' : 'MISSING'}`));
+app.listen(PORT, () => console.log(`GEO Agent on port ${PORT}`));
