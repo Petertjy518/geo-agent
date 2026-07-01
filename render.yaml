@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: geo-agent
+    env: node
+    buildCommand: npm install
+    startCommand: node server/index.js
+    plan: free
+    envVars:
+      - key: NODE_ENV
+        value: production
+      # IMPORTANT: Add your DeepSeek API Key in Render Dashboard
+      # Dashboard → Your Service → Environment → Add Environment Variable
+      # Key: DEEPSEEK_API_KEY
+      # Value: sk-your-deepseek-api-key-here
+      - key: DEEPSEEK_API_KEY
+        sync: false
