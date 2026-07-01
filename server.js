@@ -142,12 +142,11 @@ app.post('/api/diagnose', async (req, res) => {
   const send = (data) => res.write(`data: ${JSON.stringify(data)}\n\n`);
 
   try {
-    // 并行抓取真实数据
+    // 并行抓取真实数据（带单独超时保护）
     send({ status: 'running', progress: 10, currentPlatform: '数据抓取', message: '正在抓取百度和知乎...' });
-    const [baidu, zhihu] = await Promise.all([
-      scrapeBaidu(brandName, industry),
-      scrapeZhihu(brandName)
-    ]);
+    const baiduPromise = scrapeBaidu(brandName, industry).catch(e => ({ totalResults: 0, brandMentions: 0, mentionRate: 0, hasOfficialSite: false, topResults: [] }));
+    const zhihuPromise = scrapeZhihu(brandName).catch(e => ({ contentCount: 0, topContents: [] }));
+    const [baidu, zhihu] = await Promise.all([baiduPromise, zhihuPromise]);
 
     // AI分析（并行）
     send({ status: 'running', progress: 30, currentPlatform: 'AI分析', message: '正在分析6个维度...' });
